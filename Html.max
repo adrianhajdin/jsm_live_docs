@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mobile AI Chat App</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Configure Tailwind to use Inter font -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    colors: {
+                        'gemini-blue': '#1a73e8',
+                        'gemini-light': '#e8f0fe',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        /* Custom scrollbar styling for the chat history */
+        .chat-container::-webkit-scrollbar {
+            width: 6px;
+        }
+        .chat-container::-webkit-scrollbar-thumb {
+            background-color: #cbd5e1; /* slate-400 */
+            border-radius: 10px;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 font-sans min-h-screen flex items-center justify-center p-4">
+
+    <div id="app" class="bg-white shadow-xl rounded-2xl w-full max-w-lg overflow-hidden flex flex-col h-[80vh] md:h-[90vh]">
+        <!-- Header -->
+        <header class="bg-gemini-blue text-white p-4 flex items-center justify-between shadow-md">
+            <div class="flex items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 12h2m10 0h2M3 12a9 9 0 0118 0 9 9 0 01-18 0z" />
+                </svg>
+                <h1 class="text-xl font-bold">Pocket AI Assistant</h1>
+            </div>
+        </header>
+
+        <!-- Chat History Area -->
+        <div id="chatHistory" class="flex-grow p-4 overflow-y-auto chat-container space-y-4">
+            <!-- Initial Message Bubble -->
+            <div class="flex justify-start">
+                <div class="bg-gemini-light text-gray-800 p-3 rounded-tr-xl rounded-b-xl max-w-xs shadow-sm">
+                    Hello! I'm your AI assistant. Ask me anything!
+                </div>
+            </div>
+            <!-- Messages will be injected here -->
+        </div>
+
+        <!-- Input and Control Area -->
+        <div class="p-4 border-t border-gray-200 bg-white">
+            <div class="relative">
+                <textarea id="promptInput"
+                          class="w-full p-3 pr-16 border border-gray-300 rounded-xl resize-none focus:ring-2 focus:ring-gemini-blue focus:border-gemini-blue transition duration-150"
+                          placeholder="Type your message..."
+                          rows="2"></textarea>
+                <button id="sendButton"
+                        class="absolute right-2 bottom-2 bg-gemini-blue text-white p-2 rounded-full shadow-lg hover:bg-blue-600 transition duration-150 disabled:bg-gray-400"
+                        onclick="handleQuery()">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                        <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 00.985 1.34L9 18l5.816 1.454a1 1 0 001.292-1.292L11 9l1.454-5.816z" />
+                    </svg>
+                </button>
+            </div>
+            <div id="errorMessage" class="text-red-500 text-sm mt-2 hidden"></div>
+            <div id="loadingIndicator" class="text-gemini-blue text-sm mt-2 hidden">
+                <div class="flex items-center">
+                    <svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-gemini-blue" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Generating response...
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const chatHistory = document.getElementById('chatHistory');
+        const promptInput = document.getElementById('promptInput');
+        const sendButton = document.getElementById('sendButton');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const errorMessage = document.getElementById('errorMessage');
+
+        const apiKey = ""; // Canvas will automatically provide the API key
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+        // Utility function to add a message bubble to the chat
+        function addMessage(text, isUser) {
+            const container = document.createElement('div');
+            container.className = `flex ${isUser ? 'justify-end' : 'justify-start'}`;
+
+            const bubble = document.createElement('div');
+            bubble.className = `p-3 rounded-2xl max-w-[80%] shadow-md transition-all duration-300 ${
+                isUser 
+                ? 'bg-gemini-blue text-white rounded-br-none' 
+                : 'bg-gray-200 text-gray-800 rounded-bl-none'
+            }`;
+            
+            // Format markdown content for better readability (simple approach)
+            const formattedText = text
+                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\*(.*?)\*/g, '<em>$1</em>')
+                .replace(/^- /gm, '<br>&#x2022; '); 
+
+            bubble.innerHTML = formattedText;
+            container.appendChild(bubble);
+            chatHistory.appendChild(container);
+            
+            // Scroll to the bottom
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+        }
+
+        // Exponential backoff mechanism for robust API calls
+        async function fetchWithRetry(url, options, maxRetries = 5) {
+            for (let attempt = 0; attempt < maxRetries; attempt++) {
+                try {
+                    const response = await fetch(url, options);
+                    
+                    if (response.status === 429 || response.status >= 500) {
+                        // Retry for rate limiting (429) or server errors (5xx)
+                        const delay = Math.pow(2, attempt) * 1000 + (Math.random() * 1000); // 1s, 2s, 4s, 8s, 16s + jitter
+                        if (attempt < maxRetries - 1) {
+                            console.warn(`Attempt ${attempt + 1} failed with status ${response.status}. Retrying in ${Math.round(delay / 1000)}s...`);
+                            await new Promise(resolve => setTimeout(resolve, delay));
+                            continue; 
+                        }
+                    }
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+
+                    return response; // Successful response
+                } catch (error) {
+                    console.error("Fetch error:", error.message);
+                    if (attempt === maxRetries - 1) {
+                        throw new Error("Failed to connect to the AI service after multiple retries.");
+                    }
+                    // Delay is handled within the 429/5xx block, but a general catch for network issues needs a minimal delay
+                    const delay = Math.pow(2, attempt) * 500;
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
+            }
+        }
+
+        async function handleQuery() {
+            const prompt = promptInput.value.trim();
+            if (!prompt) return;
+
+            // Clear previous errors
+            errorMessage.classList.add('hidden');
+            
+            // Display user message
+            addMessage(prompt, true);
+            
+            // Clear input field
+            promptInput.value = '';
+
+            // Disable UI and show loading
+            sendButton.disabled = true;
+            loadingIndicator.classList.remove('hidden');
+
+            const payload = {
+                contents: [{ parts: [{ text: prompt }] }],
+                systemInstruction: {
+                    parts: [{ text: "You are a friendly, helpful, and concise mobile AI assistant. Format your responses using simple markdown (like **bold** and *italics*)." }]
+                },
+            };
+
+            const options = {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            };
+
+            try {
+                const response = await fetchWithRetry(apiUrl, options);
+                const result = await response.json();
+
+                const aiText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+                
+                if (aiText) {
+                    addMessage(aiText, false);
+                } else {
+                    const errorDetail = result.error ? result.error.message : "AI returned an empty or unexpected response.";
+                    throw new Error(errorDetail);
+                }
+
+            } catch (error) {
+                console.error("AI Generation Error:", error);
+                errorMessage.textContent = `Error: ${error.message}`;
+                errorMessage.classList.remove('hidden');
+                addMessage("I'm sorry, I ran into an error trying to process that request. Please try again.", false);
+            } finally {
+                // Re-enable UI and hide loading
+                sendButton.disabled = false;
+                loadingIndicator.classList.add('hidden');
+            }
+        }
+
+        // Allow pressing Enter to send (Shift + Enter for new line)
+        promptInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleQuery();
+            }
+        });
+
+    </script>
+
+</body>
+</html>
